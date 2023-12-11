@@ -946,7 +946,8 @@ func (a *Adapter) Preview(rules *[]CasbinRule, model model.Model) error {
 	for i, rule := range *rules {
 		r := []string{rule.Ptype,
 			rule.V0, rule.V1, rule.V2,
-			rule.V3, rule.V4, rule.V5}
+			rule.V3, rule.V4, rule.V5,
+			rule.V6, rule.V7}
 		index := len(r) - 1
 		for r[index] == "" {
 			index--
