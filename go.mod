@@ -1,4 +1,4 @@
-module github.com/casbin/gorm-adapter/v3
+module github.com/Anzimu/gorm-adapter/v3
 
 go 1.20
 

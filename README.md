@@ -29,7 +29,7 @@ Based on [Officially Supported Databases](https://v1.gorm.io/docs/connecting_to_
 
 ## Installation
 
-    go get github.com/casbin/gorm-adapter/v3
+    go get github.com/Anzimu/gorm-adapter/v3
 
 ## Simple Example
 
