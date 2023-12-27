@@ -21,8 +21,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/casbin/casbin/v2"
-	"github.com/casbin/casbin/v2/util"
+	"github.com/anzimu/casbin/v2"
+	"github.com/anzimu/casbin/v2/util"
 	"github.com/glebarez/sqlite"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
@@ -183,7 +183,7 @@ func initAdapterWithGormInstanceAndCustomTable(t *testing.T, db *gorm.DB) *Adapt
 
 func initAdapterWithGormInstanceByName(t *testing.T, db *gorm.DB, name string) *Adapter {
 	//Create an Adapter
-	a, _ := NewAdapterByDBUseTableName(db, "", name)
+	a, _ := NewAdapterByDBUseTableName(db, "", name, nil)
 	// Initialize some policy in DB.
 	initPolicy(t, a)
 	// Now the DB has policy, so we can provide a normal use case.
@@ -203,8 +203,6 @@ func initAdapterWithoutAutoMigrate(t *testing.T, db *gorm.DB) *Adapter {
 			panic(err)
 		}
 	}
-
-	TurnOffAutoMigrate(db)
 
 	type CustomCasbinRule struct {
 		ID    uint   `gorm:"primaryKey;autoIncrement"`
@@ -246,7 +244,7 @@ func initAdapterWithGormInstanceByMulDb(t *testing.T, dbPool DbPool, dbName stri
 
 func initAdapterWithGormInstanceByPrefixAndName(t *testing.T, db *gorm.DB, prefix, name string) *Adapter {
 	//Create an Adapter
-	a, _ := NewAdapterByDBUseTableName(db, prefix, name)
+	a, _ := NewAdapterByDBUseTableName(db, prefix, name, nil)
 	// Initialize some policy in DB.
 	initPolicy(t, a)
 	// Now the DB has policy, so we can provide a normal use case.

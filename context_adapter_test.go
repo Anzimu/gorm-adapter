@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/agiledragon/gomonkey/v2"
-	"github.com/casbin/casbin/v2"
+	"github.com/anzimu/casbin/v2"
 	"github.com/stretchr/testify/assert"
 )
 

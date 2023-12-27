@@ -15,16 +15,12 @@
 package gormadapter
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
-	"runtime"
-	"strings"
-
-	"github.com/casbin/casbin/v2"
-	"github.com/casbin/casbin/v2/model"
-	"github.com/casbin/casbin/v2/persist"
+	"github.com/anzimu/casbin/v2"
+	"github.com/anzimu/casbin/v2/model"
+	"github.com/anzimu/casbin/v2/persist"
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
@@ -32,6 +28,9 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 	"gorm.io/plugin/dbresolver"
+	"log"
+	"runtime"
+	"strings"
 )
 
 const (
@@ -39,7 +38,6 @@ const (
 	defaultTableName    = "casbin_rule"
 )
 
-const disableMigrateKey = "disableMigrateKey"
 const customTableKey = "customTableKey"
 
 type CasbinRule struct {
@@ -85,6 +83,7 @@ type Adapter struct {
 	dbSpecified    bool
 	db             *gorm.DB
 	isFiltered     bool
+	customTableKey interface{}
 }
 
 // finalizer is the destructor for Adapter.
@@ -192,22 +191,24 @@ func NewAdapter(driverName string, dataSourceName string, params ...interface{})
 }
 
 // NewAdapterByDBUseTableName creates gorm-adapter by an existing Gorm instance and the specified table prefix and table name
-// Example: gormadapter.NewAdapterByDBUseTableName(&db, "cms", "casbin") Automatically generate table name like this "cms_casbin"
-func NewAdapterByDBUseTableName(db *gorm.DB, prefix string, tableName string) (*Adapter, error) {
+// Example: gormadapter.NewAdapterByDBUseTableName(&db, "cms", "casbin", nil) Automatically generate table name like this "cms_casbin"
+func NewAdapterByDBUseTableName(db *gorm.DB, prefix string, tableName string, customTableKey interface{}, autoMigrate ...bool) (*Adapter, error) {
 	if len(tableName) == 0 {
 		tableName = defaultTableName
 	}
 
 	a := &Adapter{
-		tablePrefix: prefix,
-		tableName:   tableName,
+		tablePrefix:    prefix,
+		tableName:      tableName,
+		customTableKey: customTableKey,
+		db:             db,
 	}
 
-	a.db = db.Scopes(a.casbinRuleTable()).Session(&gorm.Session{Context: db.Statement.Context})
-
-	err := a.createTable()
-	if err != nil {
-		return nil, err
+	if len(autoMigrate) > 0 && autoMigrate[0] {
+		err := a.createTable()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return a, nil
@@ -236,11 +237,11 @@ func InitDbResolver(dbArr []gorm.Dialector, dbNames []string) (DbPool, error) {
 	return DbPool{dbMap: dbMap, policy: &p, source: source}, err
 }
 
-func NewAdapterByMulDb(dbPool DbPool, dbName string, prefix string, tableName string) (*Adapter, error) {
+func NewAdapterByMulDb(dbPool DbPool, dbName string, prefix string, tableName string, autoMigrate ...bool) (*Adapter, error) {
 	//change DB
 	db := dbPool.switchDb(dbName)
 
-	return NewAdapterByDBUseTableName(db, prefix, tableName)
+	return NewAdapterByDBUseTableName(db, prefix, tableName, nil, autoMigrate...)
 }
 
 // NewFilteredAdapter is the constructor for FilteredAdapter.
@@ -262,41 +263,23 @@ func NewFilteredAdapterByDB(db *gorm.DB, prefix string, tableName string) (*Adap
 		tableName:   tableName,
 		isFiltered:  true,
 	}
-	adapter.db = db.Scopes(adapter.casbinRuleTable()).Session(&gorm.Session{Context: db.Statement.Context})
+	adapter.db = db.Session(&gorm.Session{Context: db.Statement.Context})
 
 	return adapter, nil
 }
 
 // NewAdapterByDB creates gorm-adapter by an existing Gorm instance
-func NewAdapterByDB(db *gorm.DB) (*Adapter, error) {
-	return NewAdapterByDBUseTableName(db, "", defaultTableName)
+func NewAdapterByDB(db *gorm.DB, autoMigrate ...bool) (*Adapter, error) {
+	return NewAdapterByDBUseTableName(db, "", defaultTableName, nil, autoMigrate...)
 }
 
-func TurnOffAutoMigrate(db *gorm.DB) {
-	ctx := db.Statement.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	ctx = context.WithValue(ctx, disableMigrateKey, false)
-
-	*db = *db.WithContext(ctx)
-}
-
-func NewAdapterByDBWithCustomTable(db *gorm.DB, t interface{}, tableName ...string) (*Adapter, error) {
-	ctx := db.Statement.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	ctx = context.WithValue(ctx, customTableKey, t)
-
+func NewAdapterByDBWithCustomTable(db *gorm.DB, t interface{}, tableName string, autoMigrate ...bool) (*Adapter, error) {
 	curTableName := defaultTableName
-	if len(tableName) > 0 {
-		curTableName = tableName[0]
+	if len(tableName) != 0 {
+		curTableName = tableName
 	}
 
-	return NewAdapterByDBUseTableName(db.WithContext(ctx), "", curTableName)
+	return NewAdapterByDBUseTableName(db, "", curTableName, t, autoMigrate...)
 }
 
 func openDBConnection(driverName, dataSourceName string) (*gorm.DB, error) {
@@ -368,8 +351,8 @@ func (a *Adapter) Open() error {
 		}
 	}
 
-	a.db = db.Scopes(a.casbinRuleTable()).Session(&gorm.Session{})
-	return a.createTable()
+	a.db = db.Session(&gorm.Session{})
+	return nil
 }
 
 // AddLogger adds logger to db
@@ -402,18 +385,11 @@ func (a *Adapter) casbinRuleTable() func(db *gorm.DB) *gorm.DB {
 }
 
 func (a *Adapter) createTable() error {
-	disableMigrate := a.db.Statement.Context.Value(disableMigrateKey)
-	if disableMigrate != nil {
-		return nil
+	if a.customTableKey != nil {
+		return a.db.AutoMigrate(a.customTableKey)
 	}
 
-	t := a.db.Statement.Context.Value(customTableKey)
-
-	if t != nil {
-		return a.db.AutoMigrate(t)
-	}
-
-	t = a.getTableInstance()
+	t := a.getTableInstance()
 	if err := a.db.AutoMigrate(t); err != nil {
 		return err
 	}
@@ -438,7 +414,7 @@ func (a *Adapter) dropTable() error {
 	return a.db.Migrator().DropTable(t)
 }
 
-func (a *Adapter) truncateTable() error {
+func (a *Adapter) truncateTable(db *gorm.DB) error {
 	var sql string
 	switch a.db.Config.Name() {
 	case sqlite.DriverName:
@@ -454,7 +430,7 @@ func (a *Adapter) truncateTable() error {
 	default:
 		sql = fmt.Sprintf("truncate table %s", a.getFullTableName())
 	}
-	return a.db.Exec(sql).Error
+	return db.Exec(sql).Error
 }
 
 func loadPolicyLine(line CasbinRule, model model.Model) error {
@@ -478,61 +454,12 @@ func loadPolicyLine(line CasbinRule, model model.Model) error {
 
 // LoadPolicy loads policy from database.
 func (a *Adapter) LoadPolicy(model model.Model) error {
-	var lines []CasbinRule
-	if err := a.db.Order("ID").Find(&lines).Error; err != nil {
-		return err
-	}
-	err := a.Preview(&lines, model)
-	if err != nil {
-		return err
-	}
-	for _, line := range lines {
-		err := loadPolicyLine(line, model)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return a.loadPolicy(a.db, model)
 }
 
 // LoadFilteredPolicy loads only policy rules that match the filter.
 func (a *Adapter) LoadFilteredPolicy(model model.Model, filter interface{}) error {
-	var lines []CasbinRule
-
-	batchFilter := BatchFilter{
-		filters: []Filter{},
-	}
-	switch filterValue := filter.(type) {
-	case Filter:
-		batchFilter.filters = []Filter{filterValue}
-	case *Filter:
-		batchFilter.filters = []Filter{*filterValue}
-	case []Filter:
-		batchFilter.filters = filterValue
-	case BatchFilter:
-		batchFilter = filterValue
-	case *BatchFilter:
-		batchFilter = *filterValue
-	default:
-		return errors.New("unsupported filter type")
-	}
-
-	for _, f := range batchFilter.filters {
-		if err := a.db.Scopes(a.filterQuery(a.db, f)).Order("ID").Find(&lines).Error; err != nil {
-			return err
-		}
-
-		for _, line := range lines {
-			err := loadPolicyLine(line, model)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	a.isFiltered = true
-
-	return nil
+	return a.loadFilteredPolicy(a.db, model, filter)
 }
 
 // IsFiltered returns true if the loaded policy has been filtered.
@@ -608,158 +535,73 @@ func (a *Adapter) savePolicyLine(ptype string, rule []string) CasbinRule {
 
 // SavePolicy saves policy to database.
 func (a *Adapter) SavePolicy(model model.Model) error {
-	var err error
-	tx := a.db.Clauses(dbresolver.Write).Begin()
-
-	err = a.truncateTable()
-
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	var lines []CasbinRule
-	flushEvery := 1000
-	for ptype, ast := range model["p"] {
-		for _, rule := range ast.Policy {
-			lines = append(lines, a.savePolicyLine(ptype, rule))
-			if len(lines) > flushEvery {
-				if err := tx.Create(&lines).Error; err != nil {
-					tx.Rollback()
-					return err
-				}
-				lines = nil
-			}
-		}
-	}
-
-	for ptype, ast := range model["g"] {
-		for _, rule := range ast.Policy {
-			lines = append(lines, a.savePolicyLine(ptype, rule))
-			if len(lines) > flushEvery {
-				if err := tx.Create(&lines).Error; err != nil {
-					tx.Rollback()
-					return err
-				}
-				lines = nil
-			}
-		}
-	}
-	if len(lines) > 0 {
-		if err := tx.Create(&lines).Error; err != nil {
-			tx.Rollback()
-			return err
-		}
-	}
-
-	err = tx.Commit().Error
-	return err
+	return a.savePolicy(a.db, model)
 }
 
 // AddPolicy adds a policy rule to the storage.
 func (a *Adapter) AddPolicy(sec string, ptype string, rule []string) error {
-	line := a.savePolicyLine(ptype, rule)
-	err := a.db.Create(&line).Error
-	return err
+	return a.addPolicy(a.db, sec, ptype, rule)
 }
 
 // RemovePolicy removes a policy rule from the storage.
 func (a *Adapter) RemovePolicy(sec string, ptype string, rule []string) error {
-	line := a.savePolicyLine(ptype, rule)
-	err := a.rawDelete(a.db, line) //can't use db.Delete as we're not using primary key https://gorm.io/docs/update.html
-	return err
+	return a.removePolicy(a.db, sec, ptype, rule)
 }
 
 // AddPolicies adds multiple policy rules to the storage.
 func (a *Adapter) AddPolicies(sec string, ptype string, rules [][]string) error {
-	var lines []CasbinRule
-	for _, rule := range rules {
-		line := a.savePolicyLine(ptype, rule)
-		lines = append(lines, line)
-	}
-	return a.db.Create(&lines).Error
+	return a.addPolicies(a.db, sec, ptype, rules)
 }
 
 // Transaction perform a set of operations within a transaction
 func (a *Adapter) Transaction(e casbin.IEnforcer, fc func(casbin.IEnforcer) error, opts ...*sql.TxOptions) error {
+	panicked := true
 	var err error
-	oriAdapter := a.db
-	// reload policy from database to sync with the transaction
-	defer func() {
-		e.SetAdapter(&Adapter{db: oriAdapter})
-		err = e.LoadPolicy()
-		if err != nil {
-			panic(err)
-		}
-	}()
+
 	copyDB := *a.db
 	tx := copyDB.Begin(opts...)
-	b := &Adapter{db: tx}
+	if tx.Error != nil {
+		return tx.Error
+	}
+
+	defer func() {
+		// Make sure to rollback when panic, Block error or Commit error
+		if panicked || err != nil {
+			tx.Rollback()
+			if err = e.LoadPolicy(); err != nil {
+				log.Println(err)
+			}
+			return
+		}
+	}()
+
+	b := &Adapter{
+		tableName: a.tableName,
+		db:        tx,
+	}
 	// copy enforcer to set the new adapter with transaction tx
 	copyEnforcer := e
 	copyEnforcer.SetAdapter(b)
-	err = fc(copyEnforcer)
-	if err != nil {
-		tx.Rollback()
-		return err
+	if err = fc(copyEnforcer); err == nil {
+		panicked = false
+		if err = tx.Commit().Error; err != nil {
+			return err
+		}
+		return nil
 	}
-	err = tx.Commit().Error
+
+	panicked = false
 	return err
 }
 
 // RemovePolicies removes multiple policy rules from the storage.
 func (a *Adapter) RemovePolicies(sec string, ptype string, rules [][]string) error {
-	return a.db.Transaction(func(tx *gorm.DB) error {
-		for _, rule := range rules {
-			line := a.savePolicyLine(ptype, rule)
-			if err := a.rawDelete(tx, line); err != nil { //can't use db.Delete as we're not using primary key https://gorm.io/docs/update.html
-			}
-		}
-		return nil
-	})
+	return a.removePolicies(a.db, sec, ptype, rules)
 }
 
 // RemoveFilteredPolicy removes policy rules that match the filter from the storage.
 func (a *Adapter) RemoveFilteredPolicy(sec string, ptype string, fieldIndex int, fieldValues ...string) error {
-	line := a.getTableInstance()
-
-	line.Ptype = ptype
-
-	if fieldIndex == -1 {
-		return a.rawDelete(a.db, *line)
-	}
-
-	err := checkQueryField(fieldValues)
-	if err != nil {
-		return err
-	}
-
-	if fieldIndex <= 0 && 0 < fieldIndex+len(fieldValues) {
-		line.V0 = fieldValues[0-fieldIndex]
-	}
-	if fieldIndex <= 1 && 1 < fieldIndex+len(fieldValues) {
-		line.V1 = fieldValues[1-fieldIndex]
-	}
-	if fieldIndex <= 2 && 2 < fieldIndex+len(fieldValues) {
-		line.V2 = fieldValues[2-fieldIndex]
-	}
-	if fieldIndex <= 3 && 3 < fieldIndex+len(fieldValues) {
-		line.V3 = fieldValues[3-fieldIndex]
-	}
-	if fieldIndex <= 4 && 4 < fieldIndex+len(fieldValues) {
-		line.V4 = fieldValues[4-fieldIndex]
-	}
-	if fieldIndex <= 5 && 5 < fieldIndex+len(fieldValues) {
-		line.V5 = fieldValues[5-fieldIndex]
-	}
-	if fieldIndex <= 6 && 6 < fieldIndex+len(fieldValues) {
-		line.V6 = fieldValues[6-fieldIndex]
-	}
-	if fieldIndex <= 7 && 7 < fieldIndex+len(fieldValues) {
-		line.V7 = fieldValues[7-fieldIndex]
-	}
-	err = a.rawDelete(a.db, *line)
-	return err
+	return a.removeFilteredPolicy(a.db, sec, ptype, fieldIndex, fieldValues...)
 }
 
 // checkQueryfield make sure the fields won't all be empty (string --> "")
@@ -854,90 +696,16 @@ func appendWhere(line CasbinRule) (string, []interface{}) {
 
 // UpdatePolicy updates a new policy rule to DB.
 func (a *Adapter) UpdatePolicy(sec string, ptype string, oldRule, newPolicy []string) error {
-	oldLine := a.savePolicyLine(ptype, oldRule)
-	newLine := a.savePolicyLine(ptype, newPolicy)
-	return a.db.Model(&oldLine).Where(&oldLine).Updates(newLine).Error
+	return a.updatePolicy(a.db, sec, ptype, oldRule, newPolicy)
 }
 
 func (a *Adapter) UpdatePolicies(sec string, ptype string, oldRules, newRules [][]string) error {
-	oldPolicies := make([]CasbinRule, 0, len(oldRules))
-	newPolicies := make([]CasbinRule, 0, len(oldRules))
-	for _, oldRule := range oldRules {
-		oldPolicies = append(oldPolicies, a.savePolicyLine(ptype, oldRule))
-	}
-	for _, newRule := range newRules {
-		newPolicies = append(newPolicies, a.savePolicyLine(ptype, newRule))
-	}
-	tx := a.db.Begin()
-	for i := range oldPolicies {
-		if err := tx.Model(&oldPolicies[i]).Where(&oldPolicies[i]).Updates(newPolicies[i]).Error; err != nil {
-			tx.Rollback()
-			return err
-		}
-	}
-	return tx.Commit().Error
+	return a.updatePolicies(a.db, sec, ptype, oldRules, newRules)
 }
 
+// UpdateFilteredPolicies deletes old rules and adds new rules.
 func (a *Adapter) UpdateFilteredPolicies(sec string, ptype string, newPolicies [][]string, fieldIndex int, fieldValues ...string) ([][]string, error) {
-	// UpdateFilteredPolicies deletes old rules and adds new rules.
-	line := a.getTableInstance()
-
-	line.Ptype = ptype
-	if fieldIndex <= 0 && 0 < fieldIndex+len(fieldValues) {
-		line.V0 = fieldValues[0-fieldIndex]
-	}
-	if fieldIndex <= 1 && 1 < fieldIndex+len(fieldValues) {
-		line.V1 = fieldValues[1-fieldIndex]
-	}
-	if fieldIndex <= 2 && 2 < fieldIndex+len(fieldValues) {
-		line.V2 = fieldValues[2-fieldIndex]
-	}
-	if fieldIndex <= 3 && 3 < fieldIndex+len(fieldValues) {
-		line.V3 = fieldValues[3-fieldIndex]
-	}
-	if fieldIndex <= 4 && 4 < fieldIndex+len(fieldValues) {
-		line.V4 = fieldValues[4-fieldIndex]
-	}
-	if fieldIndex <= 5 && 5 < fieldIndex+len(fieldValues) {
-		line.V5 = fieldValues[5-fieldIndex]
-	}
-	if fieldIndex <= 6 && 6 < fieldIndex+len(fieldValues) {
-		line.V6 = fieldValues[6-fieldIndex]
-	}
-	if fieldIndex <= 7 && 7 < fieldIndex+len(fieldValues) {
-		line.V7 = fieldValues[7-fieldIndex]
-	}
-
-	newP := make([]CasbinRule, 0, len(newPolicies))
-	oldP := make([]CasbinRule, 0)
-	for _, newRule := range newPolicies {
-		newP = append(newP, a.savePolicyLine(ptype, newRule))
-	}
-
-	tx := a.db.Begin()
-	str, args := line.queryString()
-	if err := tx.Where(str, args...).Find(&oldP).Error; err != nil {
-		tx.Rollback()
-		return nil, err
-	}
-	if err := tx.Where(str, args...).Delete([]CasbinRule{}).Error; err != nil {
-		tx.Rollback()
-		return nil, err
-	}
-	for i := range newP {
-		if err := tx.Create(&newP[i]).Error; err != nil {
-			tx.Rollback()
-			return nil, err
-		}
-	}
-
-	// return deleted rulues
-	oldPolicies := make([][]string, 0)
-	for _, v := range oldP {
-		oldPolicy := v.toStringPolicy()
-		oldPolicies = append(oldPolicies, oldPolicy)
-	}
-	return oldPolicies, tx.Commit().Error
+	return a.updateFilteredPolicies(a.db, sec, ptype, newPolicies, fieldIndex, fieldValues...)
 }
 
 // Preview Pre-checking to avoid causing partial load success and partial failure deep
