@@ -24,6 +24,8 @@ import (
 	"log"
 )
 
+var CtxWithoutDBError = errors.New("[casbin] gorm adapter error: db does not within context")
+
 type ContextAdapter struct {
 	*Adapter
 	gormCtxKey interface{}
@@ -82,21 +84,21 @@ func (ca *ContextAdapter) getDBByCtx(ctx context.Context) (*gorm.DB, bool) {
 }
 
 // TransactionCtx perform a set of operations within a transaction
-func (a *ContextAdapter) TransactionCtx(ctx context.Context, e casbin.ISyncedContextEnforcer,
+func (ca *ContextAdapter) TransactionCtx(ctx context.Context, e casbin.ISyncedContextEnforcer,
 	fc func(ctxEx context.Context, tx *gorm.DB) error, opts ...*sql.TxOptions) error {
 	panicked := true
 	var err error
 
-	db, ok := a.getDBByCtx(ctx)
+	db, ok := ca.getDBByCtx(ctx)
 	if !ok {
-		return errors.New("db does not in this context")
+		return CtxWithoutDBError
 	}
 	tx := db.Begin(opts...)
 	if tx.Error != nil {
 		return tx.Error
 	}
 	// Set transaction db into the ctx
-	ctxEx := context.WithValue(ctx, a.gormCtxKey, tx)
+	ctxEx := context.WithValue(ctx, ca.gormCtxKey, tx)
 
 	defer func() {
 		// Make sure to rollback when panic, Block error or Commit error
@@ -111,8 +113,9 @@ func (a *ContextAdapter) TransactionCtx(ctx context.Context, e casbin.ISyncedCon
 
 	if err = fc(ctxEx, tx); err == nil {
 		panicked = false
-		if err = tx.Commit().Error; err != nil {
-			return err
+		tx.Commit()
+		if tx.Error != nil {
+			return tx.Error
 		}
 		return nil
 	}
@@ -126,7 +129,7 @@ func (ca *ContextAdapter) LoadPolicyCtx(ctx context.Context, model model.Model) 
 	return executeWithContext(ctx, func() error {
 		db, ok := ca.getDBByCtx(ctx)
 		if !ok {
-			return errors.New("db dose not in this context")
+			return CtxWithoutDBError
 		}
 		return ca.loadPolicy(db, model)
 	})
@@ -137,7 +140,7 @@ func (ca *ContextAdapter) LoadFilteredPolicyCtx(ctx context.Context, model model
 	return executeWithContext(ctx, func() error {
 		db, ok := ca.getDBByCtx(ctx)
 		if !ok {
-			return errors.New("db dose not in this context")
+			return CtxWithoutDBError
 		}
 		return ca.loadFilteredPolicy(db, model, filter)
 	})
@@ -148,7 +151,7 @@ func (ca *ContextAdapter) SavePolicyCtx(ctx context.Context, model model.Model) 
 	return executeWithContext(ctx, func() error {
 		db, ok := ca.getDBByCtx(ctx)
 		if !ok {
-			return errors.New("db dose not in this context")
+			return CtxWithoutDBError
 		}
 		return ca.savePolicy(db, model)
 	})
@@ -160,7 +163,7 @@ func (ca *ContextAdapter) AddPolicyCtx(ctx context.Context, sec string, ptype st
 	return executeWithContext(ctx, func() error {
 		db, ok := ca.getDBByCtx(ctx)
 		if !ok {
-			return errors.New("db dose not in this context")
+			return CtxWithoutDBError
 		}
 		return ca.addPolicy(db, sec, ptype, rule)
 	})
@@ -172,7 +175,7 @@ func (ca *ContextAdapter) AddPoliciesCtx(ctx context.Context, sec string, ptype 
 	return executeWithContext(ctx, func() error {
 		db, ok := ca.getDBByCtx(ctx)
 		if !ok {
-			return errors.New("db dose not in this context")
+			return CtxWithoutDBError
 		}
 		return ca.addPolicies(db, sec, ptype, rules)
 	})
@@ -184,7 +187,7 @@ func (ca *ContextAdapter) RemovePolicyCtx(ctx context.Context, sec string, ptype
 	return executeWithContext(ctx, func() error {
 		db, ok := ca.getDBByCtx(ctx)
 		if !ok {
-			return errors.New("db dose not in this context")
+			return CtxWithoutDBError
 		}
 		return ca.removePolicy(db, sec, ptype, rule)
 	})
@@ -196,7 +199,7 @@ func (ca *ContextAdapter) RemovePoliciesCtx(ctx context.Context, sec string, pty
 	return executeWithContext(ctx, func() error {
 		db, ok := ca.getDBByCtx(ctx)
 		if !ok {
-			return errors.New("db dose not in this context")
+			return CtxWithoutDBError
 		}
 		return ca.removePolicies(db, sec, ptype, rules)
 	})
@@ -208,7 +211,7 @@ func (ca *ContextAdapter) RemoveFilteredPolicyCtx(ctx context.Context, sec strin
 	return executeWithContext(ctx, func() error {
 		db, ok := ca.getDBByCtx(ctx)
 		if !ok {
-			return errors.New("db dose not in this context")
+			return CtxWithoutDBError
 		}
 		return ca.removeFilteredPolicy(db, sec, ptype, fieldIndex, fieldValues...)
 	})
@@ -220,7 +223,7 @@ func (ca *ContextAdapter) UpdatePolicyCtx(ctx context.Context, sec string, ptype
 	return executeWithContext(ctx, func() error {
 		db, ok := ca.getDBByCtx(ctx)
 		if !ok {
-			return errors.New("db dose not in this context")
+			return CtxWithoutDBError
 		}
 		return ca.updatePolicy(db, sec, ptype, oldRule, newRule)
 	})
@@ -231,7 +234,7 @@ func (ca *ContextAdapter) UpdatePoliciesCtx(ctx context.Context, sec string, pty
 	return executeWithContext(ctx, func() error {
 		db, ok := ca.getDBByCtx(ctx)
 		if !ok {
-			return errors.New("db dose not in this context")
+			return CtxWithoutDBError
 		}
 		return ca.updatePolicies(db, sec, ptype, oldRules, newRules)
 	})
@@ -242,7 +245,7 @@ func (ca *ContextAdapter) UpdateFilteredPoliciesCtx(ctx context.Context, sec str
 	return executeWithContextEx(ctx, func() ([][]string, error) {
 		db, ok := ca.getDBByCtx(ctx)
 		if !ok {
-			return nil, errors.New("db dose not in this context")
+			return nil, CtxWithoutDBError
 		}
 		return ca.updateFilteredPolicies(db, sec, ptype, newRules, fieldIndex, fieldValues...)
 	})
