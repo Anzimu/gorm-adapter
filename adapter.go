@@ -18,19 +18,19 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
+	"runtime"
+	"strings"
+
 	"github.com/anzimu/casbin/v2"
 	"github.com/anzimu/casbin/v2/model"
 	"github.com/anzimu/casbin/v2/persist"
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
-	"gorm.io/driver/sqlserver"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 	"gorm.io/plugin/dbresolver"
-	"log"
-	"runtime"
-	"strings"
 )
 
 const (
@@ -289,12 +289,10 @@ func openDBConnection(driverName, dataSourceName string) (*gorm.DB, error) {
 		db, err = gorm.Open(postgres.Open(dataSourceName), &gorm.Config{})
 	} else if driverName == "mysql" {
 		db, err = gorm.Open(mysql.Open(dataSourceName), &gorm.Config{})
-	} else if driverName == "sqlserver" {
-		db, err = gorm.Open(sqlserver.Open(dataSourceName), &gorm.Config{})
 	} else if driverName == "sqlite3" {
 		db, err = gorm.Open(sqlite.Open(dataSourceName), &gorm.Config{})
 	} else {
-		return nil, errors.New("Database dialect '" + driverName + "' is not supported. Supported databases are postgres, mysql and sqlserver")
+		return nil, errors.New("Database dialect '" + driverName + "' is not supported. Supported databases are postgres and mysql")
 	}
 	if err != nil {
 		return nil, err
@@ -315,7 +313,7 @@ func (a *Adapter) createDatabase() error {
 				return nil
 			}
 		}
-	} else if a.driverName != "sqlite3" && a.driverName != "sqlserver" {
+	} else if a.driverName != "sqlite3" {
 		err = db.Exec("CREATE DATABASE IF NOT EXISTS " + a.databaseName).Error
 	}
 	if err != nil {
@@ -341,8 +339,6 @@ func (a *Adapter) Open() error {
 			db, err = openDBConnection(a.driverName, a.dataSourceName+" dbname="+a.databaseName)
 		} else if a.driverName == "sqlite3" {
 			db, err = openDBConnection(a.driverName, a.dataSourceName)
-		} else if a.driverName == "sqlserver" {
-			db, err = openDBConnection(a.driverName, a.dataSourceName+"?database="+a.databaseName)
 		} else {
 			db, err = openDBConnection(a.driverName, a.dataSourceName+a.databaseName)
 		}
@@ -423,8 +419,6 @@ func (a *Adapter) truncateTable(db *gorm.DB) error {
 		sql = fmt.Sprintf("delete from %s", a.getFullTableName())
 	case "postgres":
 		sql = fmt.Sprintf("truncate table %s RESTART IDENTITY", a.getFullTableName())
-	case "sqlserver":
-		sql = fmt.Sprintf("truncate table %s", a.getFullTableName())
 	case "mysql":
 		sql = fmt.Sprintf("truncate table %s", a.getFullTableName())
 	default:
